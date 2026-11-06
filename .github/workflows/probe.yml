@@ -1,0 +1,76 @@
+name: off-pc-frozen-probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Runner identity
+        run: |
+          echo "OFF-PC-RUNNER os=$RUNNER_OS arch=$RUNNER_ARCH run=$GITHUB_RUN_ID sha=$GITHUB_SHA"
+          uname -a
+          node --version
+      - name: Frozen bytes positive
+        run: |
+          set -e
+          cd server-deploy
+          sha256sum -c ../MANIFEST.sha256 > /tmp/freeze.out
+          cat /tmp/freeze.out
+          echo "FROZEN-OK n=$(grep -c OK /tmp/freeze.out)"
+      - name: Frozen bytes negative control
+        run: |
+          set -e
+          cd server-deploy
+          cp README.md /tmp/README.md.bak
+          printf X >> README.md
+          if sha256sum -c ../MANIFEST.sha256 >/dev/null 2>&1; then
+            echo "FREEZE-NEGCTL-FAIL drift not detected"
+            exit 1
+          fi
+          cp /tmp/README.md.bak README.md
+          sha256sum -c ../MANIFEST.sha256 >/dev/null
+          echo "FREEZE-NEGCTL-OK drift detected and restored"
+      - name: Syntax all mjs
+        run: |
+          set -e
+          cd server-deploy
+          n=0
+          fail=0
+          for f in *.mjs; do
+            n=$((n+1))
+            node --check "$f" || fail=$((fail+1))
+          done
+          echo "NODE-SYNTAX-CHECK total=$n fail=$fail"
+          test "$fail" -eq 0
+      - name: Ten dev selftests
+        run: |
+          set -e
+          cd server-deploy
+          node gate.mjs
+          node verify_deploy.mjs
+          node stale_token_gate.mjs
+          node verify_health.mjs --selftest
+          node sendfail_gate.mjs
+          node corrupt_state_gate.mjs
+          node provenance_gate.mjs --selftest
+          node port_gate.mjs --selftest
+          node egress_gate.mjs --selftest
+          node unit_contract_gate.mjs --selftest
+          echo "TEN-SELFTESTS-OK"
+      - name: Greenwash negative control
+        run: |
+          set -e
+          cd server-deploy
+          if GATE_INJECT_GREENWASH=1 node gate.mjs >/dev/null 2>&1; then
+            echo "GREENWASH-NEGCTL-FAIL gate did not reject"
+            exit 1
+          fi
+          echo "GREENWASH-NEGCTL-OK injected gate correctly red"
+      - name: Verdict
+        run: echo "OFF-PC-PROBE-OK frozen=24 syntax=17 selftests=10 negctl=2"
