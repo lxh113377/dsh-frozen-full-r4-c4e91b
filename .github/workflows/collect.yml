@@ -1,0 +1,70 @@
+name: collect-acceptance-off-pc
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'provision/collect_acceptance.mjs'
+      - '_goal-server/reboot_acceptance_gate.mjs'
+      - '.github/workflows/collect.yml'
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Runner identity off-PC evidence
+        run: |
+          echo "COLLECT-OFF-PC-RUNNER os=$(uname -s) arch=$(uname -m) kernel=$(uname -r)"
+          node --version
+      - name: Frozen bytes sha256sum -c
+        run: |
+          cd server-deploy && sha256sum -c ../MANIFEST.sha256
+          echo "FROZEN-OK n=$(wc -l < ../MANIFEST.sha256)"
+      - name: Node syntax all mjs
+        run: |
+          node --check provision/collect_acceptance.mjs
+          node --check _goal-server/reboot_acceptance_gate.mjs
+          N=0
+          for f in server-deploy/*.mjs; do node --check "$f" || exit 1; N=$((N+1)); done
+          echo "NODE-SYNTAX-CHECK total=$N fail=0"
+      - name: Collector selftest 14 cases
+        run: |
+          node provision/collect_acceptance.mjs --selftest > /tmp/collect_selftest.out 2>&1
+          cat /tmp/collect_selftest.out
+          grep -q "ACCEPTANCE-COLLECT-SELFTEST-OK cases=14 teeth=13" /tmp/collect_selftest.out
+          echo "COLLECT-SELFTEST-OK"
+      - name: No evidence must be NOT_PROVEN rc=2
+        run: |
+          set +e
+          node provision/collect_acceptance.mjs > /tmp/collect_noev.out 2>&1
+          RC=$?
+          set -e
+          cat /tmp/collect_noev.out
+          if [ "$RC" -ne 2 ]; then echo "EXPECTED rc=2 got $RC"; exit 1; fi
+          grep -q "ACCEPTANCE=NOT_PROVEN" /tmp/collect_noev.out
+          echo "NO-EVIDENCE-NOT-PROVEN-OK rc=$RC"
+      - name: Loopback negative control must never PASS
+        run: |
+          set +e
+          DSH_COLLECT_HOST=127.0.0.1 DSH_COLLECT_URL=http://127.0.0.1:8787/_health node provision/collect_acceptance.mjs > /tmp/collect_loop.out 2>&1
+          set -e
+          cat /tmp/collect_loop.out
+          grep -q "HOST_IS_LOOPBACK" /tmp/collect_loop.out
+          grep -q "HEALTH_URL_LOOPBACK" /tmp/collect_loop.out
+          if grep -q "ACCEPTANCE=PASS" /tmp/collect_loop.out; then echo "LOOPBACK FALSY PASSED"; exit 1; fi
+          echo "LOOPBACK-NEGCTL-OK"
+      - name: import-safe worker survives
+        run: |
+          cat > _import_check.mjs <<'EOF'
+          import { assemble, collect } from "./provision/collect_acceptance.mjs";
+          const r = collect({});
+          console.log("IMPORT_OK judge=" + r.verdict + " assemble=" + (typeof assemble));
+          if (r.verdict !== "NOT_PROVEN") process.exit(1);
+          EOF
+          node _import_check.mjs
+          rm -f _import_check.mjs
+          echo "IMPORT-SAFE-OK worker_survived=true"
+      - name: Verdict
+        run: |
+          echo "COLLECT-OFF-PC-OK off_pc=true frozen=24 selftests=14 teeth=13 not_proven=true loopback_red=true import_safe=true real_messages=false always_on_7x24=false"
