@@ -1,0 +1,11 @@
+name: r26-off-pc-edge-health
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: off-PC GET probe with negative control
+        run: node .github/workflows/r26-edge-health.mjs
