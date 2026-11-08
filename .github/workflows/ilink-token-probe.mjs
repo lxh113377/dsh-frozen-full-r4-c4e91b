@@ -16,6 +16,7 @@ const DEFAULT_BASE = 'https://ilinkai.weixin.qq.com/';
 // Deterministic fake token, never the real one. Third arm proves iLink checks
 // the token VALUE: if a bogus Bearer ALSO yields a valid cursor, the probe is
 // blind and must stay NOT_PROVEN. Constant so every run is auditable.
+const SYNTHETIC_BAD_TOKEN = 'dsh-synthetic-bad-token-not-a-real-credential';
 
 // Reduce a provider response to comparable metadata; never echoes the token.
 function shape(r, ok, extra) {
