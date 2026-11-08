@@ -76,17 +76,25 @@ async function call(tok, baseUrl) {
 // false green: a bogus token that also passes flips the verdict to blind.
 export function judge(real, neg, bad) {
   const ok = (o) => o.ok && !o.rej && o.bufLen > 0;
+  // A control only counts as invalid when the SERVER actually rejected it.
+  // A thrown/timeout control means egress was unproven, NOT that the control
+  // passed: treating it as a valid negative is a false green (#36). Both arms
+  // must be observed server rejections for EDGE_TOKEN_ACCEPTED to be decidable.
+  const serverRejected = (o) => o.ok && o.rej !== null && o.rej !== undefined && o.bufLen <= 0;
   const realValid = ok(real);
   const negValid = ok(neg);
   const badValid = ok(bad);
-  const controlsInvalid = !negValid && !badValid;
+  const controlsInvalid = serverRejected(neg) && serverRejected(bad);
   const verdict = realValid && controlsInvalid ? 'EDGE_TOKEN_ACCEPTED' : 'NOT_PROVEN';
   const failures = [];
   if (!realValid) failures.push('REAL_TOKEN_NOT_ACCEPTED');
   if (negValid) failures.push('NEGCTL_NO_TOKEN_ALSO_VALID');
   if (badValid) failures.push('SYNTHETIC_BAD_TOKEN_ALSO_VALID');
+  if (!serverRejected(neg)) failures.push('NEGCTL_NOT_A_SERVER_REJECTION');
+  if (!serverRejected(bad)) failures.push('BADCTL_NOT_A_SERVER_REJECTION');
   if (realValid === negValid && realValid === badValid) failures.push('PROBE_BLIND_ALL_SAME_SHAPE');
-  return { verdict: verdict, failures: failures, realValid: realValid, negValid: negValid, badValid: badValid };
+  return { verdict: verdict, failures: failures, realValid: realValid, negValid: negValid, badValid: badValid,
+    negServerRejected: serverRejected(neg), badServerRejected: serverRejected(bad) };
 }
 
 function selftest() {
@@ -100,9 +108,11 @@ function selftest() {
     ['NEG_REAL_REJECTED', judge(rejected, rejected, rejected), 'NOT_PROVEN'],
     ['NEG_TIMEOUT_EMPTY_NOT_ACCEPTED', judge(timeoutEmpty, rejected, rejected), 'NOT_PROVEN'],
     ['NEG_REAL_THROWN', judge(thrown, rejected, rejected), 'NOT_PROVEN'],
-    ['NEG_NEG_THROWN_STILL_OK', judge(valid, thrown, rejected), 'EDGE_TOKEN_ACCEPTED'],
+    ['NEG_NEG_THROWN_STILL_OK', judge(valid, thrown, rejected), 'NOT_PROVEN'],
     ['NEG_BAD_TOKEN_ALSO_VALID', judge(valid, rejected, valid), 'NOT_PROVEN'],
-    ['NEG_BAD_THROWN_STILL_OK', judge(valid, rejected, thrown), 'EDGE_TOKEN_ACCEPTED'],
+    ['NEG_BAD_THROWN_STILL_OK', judge(valid, rejected, thrown), 'NOT_PROVEN'],
+    ['NEG_NEGCTL_TIMEOUT_EGRESS_UNPROVEN', judge(valid, timeoutEmpty, rejected), 'NOT_PROVEN'],
+    ['NEG_BADCTL_TIMEOUT_EGRESS_UNPROVEN', judge(valid, rejected, timeoutEmpty), 'NOT_PROVEN'],
   ];
   let bad = 0;
   const teeth = cases.filter((c) => c[2] === 'NOT_PROVEN').length;

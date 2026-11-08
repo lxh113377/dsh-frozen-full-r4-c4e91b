@@ -1,0 +1,86 @@
+name: iLink bot run-once
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # UTC; 5 min is the minimum GH Actions interval
+  workflow_dispatch:
+
+# Single writer for the iLink token: two runs sharing one token each hold a
+# private cursor/seen -> cursor contention + duplicate replies. Serialize.
+concurrency:
+  group: dsh-ilink-bot-single-writer
+  cancel-in-progress: false
+
+# MINIMAL: checkout needs contents:read only. actions/cache@v4 uses the runner
+# ACTIONS_RUNTIME_TOKEN (not GITHUB_TOKEN), so no actions:write /
+# contents:write is required. Restore write ONLY if state moves to git commits.
+permissions:
+  contents: read
+
+jobs:
+  run-once:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6          # > 35s long-poll + setup; hard ceiling
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'   # bot.mjs engines >=18; global fetch stable here
+
+      - name: Static gate - parse + frozen package provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server-deploy/bot.mjs
+          node --check server-deploy/run-once.mjs
+          node --check tools/run-once-judge.mjs
+          sha256sum server-deploy/bot.mjs | grep -F 9f4138c534582e583a5de27e3de68950ad6f6b5881947aacee82aa77aff3c268
+          node tools/run-once-judge.mjs --selftest
+          echo NODE-CHECK-GATE OK frozen=9f4138c534582e58
+      # Provenance pin must be updated if bot.mjs is ever re-frozen. It matches
+      # bot.mjs:318 codeHash() and the C9 gate pattern in _goal-server/.
+
+      # runtime-state.json is NOT tracked and NOT a frozen manifest member. A
+      # clean checkout has no such file, so loadState() (bot.mjs:298) returns an
+      # empty cursor/seen = genuine first boot. The tracked byte-frozen
+      # server-deploy/state.json (MANIFEST.sha256:20) selfcheck seed is NEVER
+      # read and NEVER sent to iLink. A cache HIT restores the persisted cursor.
+      - name: Restore state.json (cursor + seen)
+        uses: actions/cache/restore@v4
+        with:
+          path: server-deploy/runtime-state.json
+          key: dsh-ilink-bot-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dsh-ilink-bot-state-
+
+      - name: Run one poll cycle
+        shell: bash
+        env:
+          DSH_WEIXIN_ILINK_TOKEN: ${{ secrets.DSH_WEIXIN_ILINK_TOKEN }}
+          DSH_ILINK_STATE_PATH: server-deploy/runtime-state.json
+        run: |
+          set -euo pipefail
+          node server-deploy/run-once.mjs 2>&1 | tee run-once.log
+          echo RUN-ONCE-STEP OK rc-proven-by-pipefail
+      # pipefail propagates run-once.mjs rc!=0 (fail / corrupt_state /
+      # needs_relogin / watchdog). Secret is scoped to THIS step only.
+
+      - name: Independent judge (10 cases / 9 teeth, no token needed)
+        if: ${{ always() && hashFiles('run-once.log') != '' }}
+        shell: bash
+        run: |
+          node tools/run-once-judge.mjs run-once.log server-deploy/runtime-state.json server-deploy/bot.mjs
+
+      - name: Persist state.json (even on a red run)
+        if: ${{ always() && hashFiles('server-deploy/runtime-state.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: server-deploy/runtime-state.json
+          key: dsh-ilink-bot-state-${{ github.run_id }}-${{ github.run_attempt }}
+      # saveState() at bot.mjs:308-315 is tmp+rename atomic, so a killed run
+      # can never leave a half-written state.json. run_attempt in the key
+      # avoids cache-already-exists on a manual re-run of the same run_id.
