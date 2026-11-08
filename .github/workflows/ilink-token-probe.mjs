@@ -3,14 +3,19 @@
 // ubuntu-latest runner holding the server-own real token reach iLink and get a
 // VALID sync cursor (not errcode -14)? The local PC proved the token works
 // (bufLen=96); runner egress IP / geo / edge auth was UNATTESTED.
-// HOW: two getupdates calls - real token from env (NEVER printed), plus a
-// no-token negative control. judge() is a pure function of the two shapes;
-// --selftest runs synthetic teeth with zero network. Token value never logged.
+// HOW: three getupdates calls - real token from env (NEVER printed), a
+// no-token control, and a synthetic bad-token control (proves the VALUE is
+// checked, not just header presence). judge() is a pure function of the three
+// shapes; --selftest runs synthetic teeth with zero network. Never logs token.
 
 import { pathToFileURL } from 'node:url';
 import { createClient, rejectedProviderResponse } from '../../server-deploy/bot.mjs';
 
 const DEFAULT_BASE = 'https://ilinkai.weixin.qq.com/';
+
+// Deterministic fake token, never the real one. Third arm proves iLink checks
+// the token VALUE: if a bogus Bearer ALSO yields a valid cursor, the probe is
+// blind and must stay NOT_PROVEN. Constant so every run is auditable.
 
 // Reduce a provider response to comparable metadata; never echoes the token.
 function shape(r, ok, extra) {
@@ -64,41 +69,48 @@ async function call(tok, baseUrl) {
   }
 }
 
-// PURE. EDGE_TOKEN_ACCEPTED iff real token yields a non-empty cursor with no
-// provider rejection AND the no-token control is NOT likewise valid. Tooth:
-// if the endpoint ignores auth (both valid) or rejects both, verdict is
-// NOT_PROVEN (blind) - never a false green.
-export function judge(real, neg) {
-  const realValid = real.ok && !real.rej && real.bufLen > 0;
-  const negValid = neg.ok && !neg.rej && neg.bufLen > 0;
-  const verdict = realValid && !negValid ? 'EDGE_TOKEN_ACCEPTED' : 'NOT_PROVEN';
+// PURE. EDGE_TOKEN_ACCEPTED iff the real token yields a non-empty cursor
+// with no provider rejection AND both controls (no-token AND synthetic bad
+// token) are NOT likewise valid. Any blind shape stays NOT_PROVEN. Never a
+// false green: a bogus token that also passes flips the verdict to blind.
+export function judge(real, neg, bad) {
+  const ok = (o) => o.ok && !o.rej && o.bufLen > 0;
+  const realValid = ok(real);
+  const negValid = ok(neg);
+  const badValid = ok(bad);
+  const controlsInvalid = !negValid && !badValid;
+  const verdict = realValid && controlsInvalid ? 'EDGE_TOKEN_ACCEPTED' : 'NOT_PROVEN';
   const failures = [];
   if (!realValid) failures.push('REAL_TOKEN_NOT_ACCEPTED');
   if (negValid) failures.push('NEGCTL_NO_TOKEN_ALSO_VALID');
-  if (realValid === negValid) failures.push('PROBE_BLIND_SAME_SHAPE');
-  return { verdict: verdict, failures: failures, realValid: realValid, negValid: negValid };
+  if (badValid) failures.push('SYNTHETIC_BAD_TOKEN_ALSO_VALID');
+  if (realValid === negValid && realValid === badValid) failures.push('PROBE_BLIND_ALL_SAME_SHAPE');
+  return { verdict: verdict, failures: failures, realValid: realValid, negValid: negValid, badValid: badValid };
 }
 
 function selftest() {
   const valid = { ok: true, rej: null, bufLen: 96, ret: 0, msgs: 0 };
-  const rejected = { ok: true, rej: '-14', bufLen: 0, ret: 0, msgs: 0, errcode: -14 };
+  const rejected = { ok: true, rej: '-14', bufLen: -1, ret: 0, msgs: -1, errcode: -14 };
   const timeoutEmpty = { ok: true, rej: null, bufLen: 0, ret: 0, msgs: 0 };
   const thrown = { ok: false, rej: 'THROWN', bufLen: -1, msgs: -1 };
   const cases = [
-    ['POS_ACCEPTED', judge(valid, rejected), 'EDGE_TOKEN_ACCEPTED'],
-    ['NEG_BOTH_VALID_BLIND', judge(valid, valid), 'NOT_PROVEN'],
-    ['NEG_REAL_REJECTED', judge(rejected, rejected), 'NOT_PROVEN'],
-    ['NEG_TIMEOUT_EMPTY_NOT_ACCEPTED', judge(timeoutEmpty, rejected), 'NOT_PROVEN'],
-    ['NEG_REAL_THROWN', judge(thrown, rejected), 'NOT_PROVEN'],
-    ['NEG_NEG_THROWN_STILL_OK', judge(valid, thrown), 'EDGE_TOKEN_ACCEPTED'],
+    ['POS_ACCEPTED', judge(valid, rejected, rejected), 'EDGE_TOKEN_ACCEPTED'],
+    ['NEG_BOTH_VALID_BLIND', judge(valid, valid, valid), 'NOT_PROVEN'],
+    ['NEG_REAL_REJECTED', judge(rejected, rejected, rejected), 'NOT_PROVEN'],
+    ['NEG_TIMEOUT_EMPTY_NOT_ACCEPTED', judge(timeoutEmpty, rejected, rejected), 'NOT_PROVEN'],
+    ['NEG_REAL_THROWN', judge(thrown, rejected, rejected), 'NOT_PROVEN'],
+    ['NEG_NEG_THROWN_STILL_OK', judge(valid, thrown, rejected), 'EDGE_TOKEN_ACCEPTED'],
+    ['NEG_BAD_TOKEN_ALSO_VALID', judge(valid, rejected, valid), 'NOT_PROVEN'],
+    ['NEG_BAD_THROWN_STILL_OK', judge(valid, rejected, thrown), 'EDGE_TOKEN_ACCEPTED'],
   ];
   let bad = 0;
+  const teeth = cases.filter((c) => c[2] === 'NOT_PROVEN').length;
   for (const c of cases) {
     const ok = c[1].verdict === c[2];
     if (!ok) bad += 1;
     console.log('SELFTEST ' + (ok ? 'OK  ' : 'FAIL') + ' ' + c[0] + ' got=' + c[1].verdict);
   }
-  console.log('ILINK-TOKEN-PROBE-SELFTEST-' + (bad === 0 ? 'OK' : 'FAIL') + ' cases=' + cases.length + ' teeth=' + (cases.length - 1) + ' bad=' + bad);
+  console.log('ILINK-TOKEN-PROBE-SELFTEST-' + (bad === 0 ? 'OK' : 'FAIL') + ' cases=' + cases.length + ' teeth=' + teeth + ' bad=' + bad);
   return bad === 0;
 }
 
@@ -107,13 +119,14 @@ async function main() {
   const baseUrl = process.env.DSH_ILINK_BASE_URL || DEFAULT_BASE;
   const real = await call(token || undefined, baseUrl);
   const neg = await call(undefined, baseUrl);
-  const j = judge(real, neg);
+  const bad = await call(SYNTHETIC_BAD_TOKEN, baseUrl);
+  const j = judge(real, neg, bad);
   const out = {
     probe: 'off-pc-ilink-token',
     hasToken: !!token, tokenLen: token.length, baseUrlLen: baseUrl.length,
-    real: real, neg: neg,
+    real: real, neg: neg, bad: bad,
     verdict: j.verdict, failures: j.failures,
-    realValid: j.realValid, negValid: j.negValid,
+    realValid: j.realValid, negValid: j.negValid, badValid: j.badValid,
     acceptance: 'NOT_PROVEN',
     note: 'read-only getupdates; NO message sent; judge is systemd-independent',
   };
