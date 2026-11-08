@@ -44,6 +44,9 @@ const BOT_PATH = join(HERE, 'bot.mjs');
 const diskBotHash = createHash('sha256').update(readFileSync(BOT_PATH)).digest('hex');
 
 // Evidence outside runService: if it rejects we still report what we saw.
+// POLL-ONLY: countingFetch intercepts EVERY sendmessage before the network,
+// so sendMessageCalls (real network sends) is legitimately 0 and blockedSends
+// counts intercepts. A non-zero blockedSends is a compliance violation -> RED.
 const ev = { getUpdatesCalls: 0, getUpdatesResponded: 0,
   sendMessageCalls: 0, blockedSends: 0,
   healthCodeHash: null, healthService: null, healthProbeError: null };
@@ -115,6 +118,8 @@ async function main() {
   const ok = fatal === null
     && ev.getUpdatesCalls >= 1
     && ev.getUpdatesResponded >= 1        // H1: a real HTTP response came back
+    && ev.getUpdatesCalls === ev.getUpdatesResponded   // no unanswered/aborted call
+    && ev.blockedSends === 0               // POLL-ONLY: zero send attempts
     && ev.healthService === true
     && healthMatches
     && stats !== null

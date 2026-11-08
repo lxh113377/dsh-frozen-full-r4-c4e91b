@@ -24,6 +24,10 @@ export function decide(line, ctx) {
     return { verdict: 'FAIL', reason: 'NO_GETUPDATES_CALL' };
   if (!Number.isInteger(o.getUpdatesResponded) || o.getUpdatesResponded < 1)
     return { verdict: 'FAIL', reason: 'NO_PROVIDER_RESPONSE' };
+  // Harden r43: every getupdates CALL must have a RESOLVED response.
+  // A forged line inflating responded (999 vs 1 call) must not pass (F06).
+  if (o.getUpdatesCalls !== o.getUpdatesResponded)
+    return { verdict: 'FAIL', reason: 'UNANSWERED_GETUPDATES_CALL' };
   if (o.healthService !== true) return { verdict: 'FAIL', reason: 'HEALTH_SERVICE_MISMATCH' };
   if (o.healthCodeHash !== FROZEN_BOT_SHA256 || c.botSha256 !== FROZEN_BOT_SHA256)
     return { verdict: 'FAIL', reason: 'FROZEN_BOT_PIN_MISMATCH' };
@@ -34,6 +38,10 @@ export function decide(line, ctx) {
   if (!Number.isInteger(o.received) || !Number.isInteger(o.replied) || o.replied > o.received)
     return { verdict: 'FAIL', reason: 'COUNT_INCONSISTENT' };
   if (o.sendMessageCalls !== o.replied) return { verdict: 'FAIL', reason: 'SEND_CALL_MISMATCH' };
+  // POLL-ONLY read-B: ANY intercepted send is a compliance violation even
+  // if a forged GREEN line claims a clean self-report (closes CE6).
+  if (!Number.isInteger(o.blockedSends) || o.blockedSends !== 0)
+    return { verdict: 'FAIL', reason: 'POLL_ONLY_SEND_BLOCKED' };
   if (!Number.isInteger(o.getUpdatesBufLen) || o.getUpdatesBufLen < 0)
     return { verdict: 'FAIL', reason: 'NO_STATE_PERSISTED' };
   if (o.getUpdatesBufLen === 0)
@@ -73,6 +81,8 @@ function selftest() {
     { n: 'nc_count',     l: line({ ...GOOD, received: 0, replied: 1 }),         c: ctx,                                              v: 'FAIL', r: 'COUNT_INCONSISTENT' },
     { n: 'nc_neg_len',   l: line({ ...GOOD, getUpdatesBufLen: -1 }),            c: ctx,                                              v: 'FAIL', r: 'NO_STATE_PERSISTED' },
     { n: 'nc_seen',      l: line(GOOD),                                          c: { botSha256: SHA, state: { getUpdatesBuf: 'cursor', seen: 'x' } }, v: 'FAIL', r: 'STATE_SEEN_MISSING' },
+    { n: 'nc_blocked',   l: line({ ...GOOD, blockedSends: 99 }),        c: ctx, v: 'FAIL', r: 'POLL_ONLY_SEND_BLOCKED' },
+    { n: 'nc_resp_infl', l: line({ ...GOOD, getUpdatesResponded: 999 }), c: ctx, v: 'FAIL', r: 'UNANSWERED_GETUPDATES_CALL' },
   ];
   const reasons = new Set();
   for (const k of cases) {
