@@ -1,0 +1,24 @@
+name: ilink-token-probe-off-pc
+on:
+  workflow_dispatch:
+concurrency:
+  group: ilink-token-probe-single-writer
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Off-PC runner identity
+        run: |
+          uname -a
+          node --version
+          echo OFF-PC-RUNNER run=$GITHUB_RUN_ID sha=$GITHUB_SHA
+      - uses: actions/checkout@v4
+      - name: Read-only iLink token acceptance probe
+        env:
+          DSH_WEIXIN_ILINK_TOKEN: ${{ secrets.DSH_WEIXIN_ILINK_TOKEN }}
+          DSH_ILINK_BASE_URL: https://ilinkai.weixin.qq.com/
+        run: node .github/workflows/ilink-token-probe.mjs
