@@ -31,22 +31,36 @@ function shape(r, ok, extra) {
 
 // One long-poll. On client timeout getUpdates swallows into an empty buf
 // (bufLen 0) - that is NOT acceptance, it is the trap this probe must reject.
+const LONGPOLL_MS = Number(process.env.DSH_PROBE_LONGPOLL_MS || 60000);
+
+// Two attempts: an authenticated getupdates is a long-poll the server may hold
+// slightly beyond one client timeout. bot.mjs:231-234 swallows a client timeout
+// into {ret:0,msgs:[],get_updates_buf:''} - bufLen 0 with NO rejection, which is
+// inconclusive (NOT acceptance). ONLY a non-empty server cursor (bufLen>0) proves
+// the token was accepted, so retry once before giving up. judge stays fail-closed.
 async function call(tok, baseUrl) {
-  const client = createClient({ token: tok, baseUrl: baseUrl, longPollMs: 12000 });
-  try {
-    const r = await client.getUpdates('');
-    const rej = rejectedProviderResponse(r, ['errcode', 'ret']);
-    const o = shape(r, true, null);
-    o.rej = rej || null;
-    return o;
-  } catch (e) {
-    const o = shape(null, false, {
-      err: String(e && e.message ? e.message : e).slice(0, 160),
-      code: e && e.code,
-      providerCode: e && e.providerCode,
-    });
-    o.rej = 'THROWN';
-    return o;
+  const client = createClient({ token: tok, baseUrl: baseUrl, longPollMs: LONGPOLL_MS });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t0 = Date.now();
+    try {
+      const r = await client.getUpdates('');
+      const rej = rejectedProviderResponse(r, ['errcode', 'ret']);
+      const o = shape(r, true, null);
+      o.rej = rej || null;
+      o.ms = Date.now() - t0;
+      o.attempt = attempt + 1;
+      if (o.bufLen > 0 || o.rej || attempt === 1) return o;
+    } catch (e) {
+      const o = shape(null, false, {
+        err: String(e && e.message ? e.message : e).slice(0, 160),
+        code: e && e.code,
+        providerCode: e && e.providerCode,
+      });
+      o.rej = 'THROWN';
+      o.ms = Date.now() - t0;
+      o.attempt = attempt + 1;
+      return o;
+    }
   }
 }
 
