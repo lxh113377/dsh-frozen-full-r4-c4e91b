@@ -17,6 +17,15 @@ concurrency:
 permissions:
   contents: read
 
+# COMPLIANCE (read-B): iLink is 1:1 DIRECT with NO group surface. The adapter
+# server-deploy/run-once.mjs is POLL-ONLY: it blocks EVERY sendmessage, so ZERO
+# messages are sent to anyone (owner-only private chat is the sole permitted
+# test target; groups/real contacts must not be sent). Auto-reply is deferred
+# pending owner-allowlist wiring + a verified PC-off round-trip. This carrier
+# proves off-PC authentication + long-poll + state persistence ONLY; it does
+# NOT claim 7x24 residency, message round-trip, or PC-off acceptance (which
+# stays ACCEPTANCE=NOT_PROVEN). Frozen bot.mjs is never modified.
+
 jobs:
   run-once:
     runs-on: ubuntu-latest
@@ -39,6 +48,8 @@ jobs:
           node --check server-deploy/run-once.mjs
           node --check tools/run-once-judge.mjs
           sha256sum server-deploy/bot.mjs | grep -F 9f4138c534582e583a5de27e3de68950ad6f6b5881947aacee82aa77aff3c268
+          sha256sum server-deploy/run-once.mjs | grep -F c952ad89ed925b55d14c663a6115894246bd72fc15102ada69b80c483225908f
+          sha256sum tools/run-once-judge.mjs | grep -F 817cffca777ca175d0ccb4f855a0a03ae15d408560f466ea0736283af8830c1f
           node tools/run-once-judge.mjs --selftest
           echo NODE-CHECK-GATE OK frozen=9f4138c534582e58
       # Provenance pin must be updated if bot.mjs is ever re-frozen. It matches
@@ -69,7 +80,7 @@ jobs:
       # pipefail propagates run-once.mjs rc!=0 (fail / corrupt_state /
       # needs_relogin / watchdog). Secret is scoped to THIS step only.
 
-      - name: Independent judge (10 cases / 9 teeth, no token needed)
+      - name: Independent judge (18 cases / 17 teeth, no token needed)
         if: ${{ always() && hashFiles('run-once.log') != '' }}
         shell: bash
         run: |
