@@ -17,6 +17,19 @@ jobs:
           node --version
           echo OFF-PC-RUNNER run=$GITHUB_RUN_ID sha=$GITHUB_SHA
       - uses: actions/checkout@v4
+      - name: Pin probe script bodies (anti-tamper static gate)
+        # WHY: the green verdict is emitted by a pure judge() over plain objects;
+        # a swapped checked-out script could fabricate the same shapes. Pin the two
+        # script bodies so a checkout/repo tamper cannot silently change the emitter.
+        # BOUNDARY: this does NOT prove response authenticity (a runtime fetch stand-in
+        # is out of scope of a static pin); that remains an ENVIRONMENT ASSUMPTION on
+        # the GitHub-hosted runner (native fetch, no NODE_OPTIONS injection).
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          printf "%s  %s\n" 381219890fa762a48efa41d4f616f7312c118e6458f33a4a9dc055e0f8233ec4 .github/workflows/ilink-token-probe.mjs > /tmp/probe-pin.sha
+          printf "%s  %s\n" 9f4138c534582e583a5de27e3de68950ad6f6b5881947aacee82aa77aff3c268 server-deploy/bot.mjs >> /tmp/probe-pin.sha
+          sha256sum -c /tmp/probe-pin.sha
+
       - name: Read-only iLink token acceptance probe
         env:
           DSH_WEIXIN_ILINK_TOKEN: ${{ secrets.DSH_WEIXIN_ILINK_TOKEN }}
